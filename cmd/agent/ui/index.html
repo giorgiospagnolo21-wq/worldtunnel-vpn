@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WorldTunnel Dashboard</title>
+    <meta name="description" content="Pannello di controllo locale per la VPN WorldTunnel Mesh P2P.">
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-primary: #0b0f19;
+            --bg-secondary: #131a2b;
+            --bg-card: rgba(22, 30, 49, 0.6);
+            --border-color: rgba(255, 255, 255, 0.08);
+            
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            
+            --color-teal: #06b6d4;
+            --color-teal-glow: rgba(6, 182, 212, 0.2);
+            --color-green: #10b981;
+            --color-green-glow: rgba(16, 185, 129, 0.2);
+            --color-red: #ef4444;
+            --color-red-glow: rgba(239, 68, 68, 0.2);
+            --color-orange: #f59e0b;
+            --color-orange-glow: rgba(245, 158, 11, 0.2);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(6, 182, 212, 0.05) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.03) 0%, transparent 40%);
+        }
+
+        header {
+            background-color: rgba(11, 15, 25, 0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1.25rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-icon {
+            width: 2.25rem;
+            height: 2.25rem;
+            background: linear-gradient(135deg, var(--color-teal), var(--color-green));
+            border-radius: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            color: #000;
+            box-shadow: 0 0 15px rgba(6, 182, 212, 0.4);
+            font-size: 1.1rem;
+        }
+
+        .logo-text {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            background: linear-gradient(to right, #ffffff, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .indicator {
+            width: 0.625rem;
+            height: 0.625rem;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .indicator.online {
+            background-color: var(--color-green);
+            box-shadow: 0 0 8px var(--color-green);
+            animation: pulse-green 2s infinite;
+        }
+
+        .indicator.offline {
+            background-color: var(--color-red);
+            box-shadow: 0 0 8px var(--color-red);
+        }
+
+        main {
+            flex: 1;
+            max-width: 1200px;
+            width: 100%;
+            margin: 2.5rem auto;
+            padding: 0 2rem;
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 900px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: 1.25rem;
+            padding: 2rem;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .card:hover {
+            border-color: rgba(6, 182, 212, 0.2);
+        }
+
+        h2 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-primary);
+        }
+
+        .info-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .info-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.375rem;
+        }
+
+        .info-value {
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            background: rgba(0, 0, 0, 0.2);
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .ip-value {
+            font-family: monospace;
+            font-size: 1.1rem;
+            color: var(--color-teal);
+            font-weight: 600;
+        }
+
+        .btn-copy {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 0.25rem;
+            border-radius: 0.375rem;
+            transition: color 0.2s, background-color 0.2s;
+        }
+
+        .btn-copy:hover {
+            color: var(--color-teal);
+            background-color: rgba(6, 182, 212, 0.1);
+        }
+
+        /* Lista dei Peer */
+        .peer-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .peer-item {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            padding: 1.25rem;
+            border-radius: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background-color 0.2s, border-color 0.2s;
+        }
+
+        .peer-item:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .peer-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .peer-name {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .peer-ip {
+            font-family: monospace;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .peer-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .peer-status.connected {
+            color: var(--color-green);
+        }
+
+        .peer-status.connecting {
+            color: var(--color-orange);
+        }
+
+        .peer-status.connected .indicator {
+            background-color: var(--color-green);
+            box-shadow: 0 0 6px var(--color-green);
+        }
+
+        .peer-status.connecting .indicator {
+            background-color: var(--color-orange);
+            box-shadow: 0 0 6px var(--color-orange);
+            animation: pulse-orange 1.5s infinite;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .empty-icon {
+            font-size: 2.5rem;
+            color: var(--text-muted);
+            opacity: 0.5;
+        }
+
+        footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            background-color: rgba(11, 15, 25, 0.3);
+            margin-top: auto;
+        }
+
+        /* Animazioni */
+        @keyframes pulse-green {
+            0% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+            }
+        }
+
+        @keyframes pulse-orange {
+            0% {
+                box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 8px rgba(245, 158, 11, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-container">
+            <div class="logo-icon">W</div>
+            <div class="logo-text">WorldTunnel</div>
+        </div>
+        <div class="status-badge" id="signaling-status">
+            <span class="indicator offline" id="status-indicator"></span>
+            <span id="status-text">Connessione...</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- Card Info/Configurazione Nodo Locale -->
+        <section class="card">
+            <h2>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-teal);"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+                Impostazioni Nodo
+            </h2>
+            
+            <div class="info-group">
+                <div class="info-label">ID Dispositivo</div>
+                <div class="info-value" id="local-id">--</div>
+            </div>
+
+            <div class="info-group">
+                <div class="info-label">IP Virtuale Attivo</div>
+                <div class="info-value">
+                    <span class="ip-value" id="local-ip">--</span>
+                    <button class="btn-copy" onclick="copyToClipboard('local-ip')" title="Copia IP">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </button>
+                </div>
+            </div>
+
+            <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 1.5rem 0;">
+
+            <div class="info-group">
+                <div class="info-label">Indirizzo Server Coordinamento</div>
+                <input type="text" id="server-url-input" style="width: 100%; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color); padding: 0.75rem 1rem; border-radius: 0.75rem; color: var(--text-primary); font-family: inherit; font-size: 0.95rem; outline: none; transition: border-color 0.2s;" placeholder="ws://localhost:8080/ws" onfocus="this.style.borderColor='var(--color-teal)'" onblur="this.style.borderColor='var(--border-color)'">
+            </div>
+
+            <div class="info-group">
+                <div class="info-label">Chiave di Rete (Account)</div>
+                <input type="text" id="network-key-input" style="width: 100%; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color); padding: 0.75rem 1rem; border-radius: 0.75rem; color: var(--text-primary); font-family: inherit; font-size: 0.95rem; outline: none; transition: border-color 0.2s;" placeholder="default_network" onfocus="this.style.borderColor='var(--color-teal)'" onblur="this.style.borderColor='var(--border-color)'">
+            </div>
+
+            <div class="info-group">
+                <div class="info-label">IP Virtuale Richiesto (Opzionale)</div>
+                <input type="text" id="requested-ip-input" style="width: 100%; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color); padding: 0.75rem 1rem; border-radius: 0.75rem; color: var(--text-primary); font-family: inherit; font-size: 0.95rem; outline: none; transition: border-color 0.2s;" placeholder="Es: 10.0.0.10" onfocus="this.style.borderColor='var(--color-teal)'" onblur="this.style.borderColor='var(--border-color)'">
+            </div>
+
+            <button onclick="saveConfiguration()" style="width: 100%; background: linear-gradient(135deg, var(--color-teal), var(--color-green)); border: none; color: #000; font-weight: 700; padding: 0.85rem; border-radius: 0.75rem; cursor: pointer; font-size: 0.95rem; transition: opacity 0.2s; box-shadow: 0 0 15px rgba(6, 182, 212, 0.2); margin-top: 1rem;" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+                Salva & Connetti
+            </button>
+        </section>
+
+        <!-- Card Mesh Network Peers -->
+        <section class="card">
+            <h2>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-green);"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                Mesh Network (Peer Connessi)
+            </h2>
+
+            <div class="peer-list" id="peer-list-container">
+                <div class="empty-state">
+                    <div class="empty-icon">🌐</div>
+                    Nessun altro peer connesso alla rete.<br>Avvia un altro agent su un PC differente usando lo stesso server di coordinamento.
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        WorldTunnel VPN Mesh • Crittografia End-to-End via WebRTC • Sviluppato per prestazioni ottimali
+    </footer>
+
+    <script>
+        function copyToClipboard(elementId) {
+            const text = document.getElementById(elementId).innerText;
+            if (text === "--") return;
+            navigator.clipboard.writeText(text).then(() => {
+                alert("IP copiato negli appunti: " + text);
+            }).catch(err => {
+                console.error("Errore copia negli appunti: ", err);
+            });
+        }
+
+        async function saveConfiguration() {
+            const serverInput = document.getElementById('server-url-input');
+            const keyInput = document.getElementById('network-key-input');
+            const ipInput = document.getElementById('requested-ip-input');
+
+            const server = serverInput.value.trim();
+            const key = keyInput.value.trim();
+            const ip = ipInput.value.trim();
+
+            if (!server) {
+                alert("Inserisci l'indirizzo del server di coordinamento!");
+                return;
+            }
+            if (!key) {
+                alert("Inserisci una chiave di rete valida!");
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/configure?server=${encodeURIComponent(server)}&key=${encodeURIComponent(key)}&ip=${encodeURIComponent(ip)}`);
+                const result = await response.json();
+                if (result.status === "ok") {
+                    alert("Configurazione salvata! Connessione in corso...");
+                    fetchStatus();
+                } else {
+                    alert("Errore durante il salvataggio della configurazione");
+                }
+            } catch (error) {
+                console.error("Errore salvataggio configurazione:", error);
+                alert("Errore di connessione all'agente locale");
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                
+                // Aggiorna info locali
+                document.getElementById('local-id').innerText = data.id || '--';
+                document.getElementById('local-ip').innerText = data.virtual_ip || '--';
+
+                const serverInput = document.getElementById('server-url-input');
+                if (document.activeElement !== serverInput) {
+                    serverInput.value = data.server || '';
+                }
+
+                const keyInput = document.getElementById('network-key-input');
+                if (document.activeElement !== keyInput) {
+                    keyInput.value = data.network_key || '';
+                }
+
+                const ipInput = document.getElementById('requested-ip-input');
+                if (document.activeElement !== ipInput) {
+                    ipInput.value = data.requested_ip || '';
+                }
+
+                // Aggiorna stato connessione server
+                const statusIndicator = document.getElementById('status-indicator');
+                const statusText = document.getElementById('status-text');
+
+                if (data.online) {
+                    statusIndicator.className = 'indicator online';
+                    statusText.innerText = 'Server Connesso';
+                } else {
+                    statusIndicator.className = 'indicator offline';
+                    statusText.innerText = 'Disconnesso';
+                }
+
+                // Aggiorna lista dei peer
+                const container = document.getElementById('peer-list-container');
+                if (!data.peers || data.peers.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-icon">🌐</div>
+                            Nessun altro peer rilevato sulla rete.<br>Avvia l'agente su un altro PC per stabilire una connessione.
+                        </div>
+                    `;
+                } else {
+                    let html = '';
+                    data.peers.forEach(peer => {
+                        const isConnected = peer.connected;
+                        const statusClass = isConnected ? 'connected' : 'connecting';
+                        const statusLabel = isConnected ? 'Connesso (P2P)' : 'Negoziazione...';
+                        
+                        html += `
+                            <div class="peer-item" id="peer-${peer.id}">
+                                <div class="peer-info">
+                                    <span class="peer-name">${peer.id}</span>
+                                    <span class="peer-ip">${peer.virtual_ip}</span>
+                                </div>
+                                <div class="peer-status ${statusClass}">
+                                    <span class="indicator"></span>
+                                    <span>${statusLabel}</span>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    container.innerHTML = html;
+                }
+
+            } catch (error) {
+                console.error("Errore fetch status:", error);
+                document.getElementById('status-indicator').className = 'indicator offline';
+                document.getElementById('status-text').innerText = 'Errore Connessione API';
+            }
+        }
+
+        // Recupera lo stato immediatamente e poi ogni 2 secondi
+        fetchStatus();
+        setInterval(fetchStatus, 2000);
+    </script>
+</body>
+</html>
