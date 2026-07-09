@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,7 +24,7 @@ var upgrader = websocket.Upgrader{
 type Client struct {
 	ID        string          `json:"id"`
 	VirtualIP string          `json:"virtual_ip"`
-	Key       string          `json:"key"` // Sarà l'email dell'account Google
+	Key       string          `json:"key"` // Email dell'account
 	Conn      *websocket.Conn `json:"-"`
 }
 
@@ -33,15 +35,22 @@ type Message struct {
 	Data   json.RawMessage `json:"data,omitempty"`   // Dati SDP o ICE
 	Peers  []Client        `json:"peers,omitempty"`  // Peers nello stesso account
 	IP     string          `json:"ip,omitempty"`     // IP assegnato
-	Error  string          `json:"error,omitempty"`  // Eventuale messaggio di errore (es: non autenticato)
+	Error  string          `json:"error,omitempty"`  // Eventuale messaggio di errore
+}
+
+type User struct {
+	Email    string `json:"email"`
+	Password string `json:"password"` // Password cifrata
 }
 
 type Server struct {
-	mu            sync.Mutex
-	clients       map[string]map[string]*Client // email -> clientID -> Client
-	assignedIP    map[string]map[string]string   // email -> clientID -> VirtualIP
-	ipPools       map[string][]string            // email -> []IPs
-	deviceToEmail map[string]string              // deviceID -> email (Sessioni attive)
+	mu                 sync.Mutex
+	clients            map[string]map[string]*Client // email -> clientID -> Client
+	assignedIP         map[string]map[string]string   // email -> clientID -> VirtualIP
+	ipPools            map[string][]string            // email -> []IPs
+	deviceToEmail      map[string]string              // deviceID -> email (Sessioni attive)
+	users              map[string]User                // email -> User
+	usersFile          string
 	googleClientID     string
 	googleClientSecret string
 	publicURL          string
@@ -51,21 +60,68 @@ func NewServer() *Server {
 	clientID := os.Getenv("GOOGLE_CLIENT_ID")
 	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
 	
-	// Ricava l'URL pubblico di Render o usa il default
 	publicURL := os.Getenv("RENDER_EXTERNAL_URL")
 	if publicURL == "" {
 		publicURL = "http://localhost:8080"
 	}
 	publicURL = strings.TrimSuffix(publicURL, "/")
 
-	return &Server{
+	s := &Server{
 		clients:            make(map[string]map[string]*Client),
 		assignedIP:         make(map[string]map[string]string),
 		ipPools:            make(map[string][]string),
 		deviceToEmail:      make(map[string]string),
+		users:              make(map[string]User),
+		usersFile:          "users.json",
 		googleClientID:     clientID,
 		googleClientSecret: clientSecret,
 		publicURL:          publicURL,
+	}
+
+	s.loadUsers()
+	return s
+}
+
+func hashPassword(password string) string {
+	hasher := sha256.New()
+	hasher.Write([]byte(password + "worldtunnel_secret_salt"))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func (s *Server) loadUsers() {
+	file, err := os.Open(s.usersFile)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	var usersList []User
+	if err := json.NewDecoder(file).Decode(&usersList); err != nil {
+		log.Printf("Errore decodifica database utenti: %v", err)
+		return
+	}
+
+	for _, u := range usersList {
+		s.users[u.Email] = u
+	}
+	log.Printf("Caricati %d utenti dal database '%s'", len(s.users), s.usersFile)
+}
+
+func (s *Server) saveUsers() {
+	file, err := os.Create(s.usersFile)
+	if err != nil {
+		log.Printf("Errore creazione file utenti: %v", err)
+		return
+	}
+	defer file.Close()
+
+	usersList := make([]User, 0, len(s.users))
+	for _, u := range s.users {
+		usersList = append(usersList, u)
+	}
+
+	if err := json.NewEncoder(file).Encode(usersList); err != nil {
+		log.Printf("Errore salvataggio database utenti: %v", err)
 	}
 }
 
@@ -169,7 +225,6 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verifica se il dispositivo è associato a un account (autenticato)
 	s.mu.Lock()
 	email, authenticated := s.deviceToEmail[clientID]
 	s.mu.Unlock()
@@ -295,23 +350,252 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Se le credenziali Google non sono configurate nell'ambiente, usa la simulazione
-	if s.googleClientID == "" || s.googleClientSecret == "" {
-		s.serveMockLoginPage(w, deviceID)
+	errMessage := r.URL.Query().Get("error")
+
+	// Pagina di login con stile premium e supporto sia Google sia Account Interno
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	
+	googleButton := ""
+	if s.googleClientID != "" && s.googleClientSecret != "" {
+		redirectURI := fmt.Sprintf("%s/auth/callback", s.publicURL)
+		googleURL := fmt.Sprintf("https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=openid%%20email&state=%s",
+			s.googleClientID, url.QueryEscape(redirectURI), deviceID)
+		
+		googleButton = fmt.Sprintf(`
+			<a href="%s" class="btn-google">
+				<svg width="18" height="18" viewBox="0 0 24 24" style="margin-right: 10px;">
+					<path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v3.92h6.69a5.74 5.74 0 0 1-2.48 3.77v3.13h3.97c2.33-2.14 3.56-5.3 3.56-8.75z"/>
+					<path fill="#34A853" d="M12 24c3.24 0 5.97-1.08 7.96-2.91l-3.97-3.13c-1.1.74-2.52 1.18-3.99 1.18-3.07 0-5.67-2.08-6.6-4.88H1.31v3.23A12 12 0 0 0 12 24z"/>
+					<path fill="#FBBC05" d="M5.4 14.26a7.18 7.18 0 0 1 0-4.52V6.51H1.31a12 12 0 0 0 0 10.98l4.09-3.23z"/>
+					<path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.31 6.51l4.09 3.23c.93-2.8 3.53-4.88 6.6-4.88z"/>
+				</svg>
+				Accedi con Google
+			</a>
+			<div class="divider">o accedi con le tue credenziali</div>
+		`, googleURL)
+	}
+
+	errBlock := ""
+	if errMessage != "" {
+		errBlock = fmt.Sprintf(`<div class="error-msg">%s</div>`, errMessage)
+	}
+
+	fmt.Fprintf(w, `
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<title>WorldTunnel - Accesso</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<style>
+			body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #fff; text-align: center; padding: 4rem 1rem; margin: 0; }
+			.card { background: #131a2b; display: inline-block; padding: 2.5rem; border-radius: 1rem; border: 1px solid rgba(255,255,255,0.08); max-width: 400px; width: 100%%; box-sizing: border-box; text-align: left; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+			h1 { color: #06b6d4; font-size: 1.6rem; margin-top: 0; margin-bottom: 0.5rem; text-align: center; font-weight: 700; }
+			p { color: #94a3b8; font-size: 0.9rem; margin-bottom: 2rem; text-align: center; }
+			.form-group { margin-bottom: 1.25rem; }
+			label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; font-weight: 500; }
+			input { width: 100%%; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.1); background: #0b0f19; color: #fff; box-sizing: border-box; font-size: 0.95rem; }
+			input:focus { border-color: #06b6d4; outline: none; }
+			.btn-primary { background: linear-gradient(135deg, #06b6d4, #10b981); border: none; padding: 0.85rem; border-radius: 0.5rem; font-weight: bold; color: #000; cursor: pointer; width: 100%%; font-size: 0.95rem; margin-top: 0.5rem; transition: opacity 0.2s; }
+			.btn-primary:hover { opacity: 0.9; }
+			.btn-google { display: flex; align-items: center; justify-content: center; background: #fff; color: #3c4043; border: 1px solid #dadce0; padding: 0.85rem; border-radius: 0.5rem; font-weight: bold; text-decoration: none; font-size: 0.95rem; text-align: center; transition: background-color 0.2s; }
+			.btn-google:hover { background-color: #f8f9fa; }
+			.divider { text-align: center; margin: 1.5rem 0; font-size: 0.8rem; color: #64748b; position: relative; }
+			.divider::before, .divider::after { content: ""; position: absolute; top: 50%%; width: 25%%; height: 1px; background: rgba(255,255,255,0.08); }
+			.divider::before { left: 0; }
+			.divider::after { right: 0; }
+			.error-msg { background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #f87171; padding: 0.75rem; border-radius: 0.5rem; font-size: 0.85rem; margin-bottom: 1.25rem; }
+			.footer-link { text-align: center; margin-top: 1.5rem; font-size: 0.85rem; color: #94a3b8; }
+			.footer-link a { color: #06b6d4; text-decoration: none; font-weight: bold; }
+		</style>
+	</head>
+	<body>
+		<div class="card">
+			<h1>Accedi a WorldTunnel</h1>
+			<p>Associa il tuo dispositivo al tuo account di rete</p>
+			
+			%s
+			
+			%s
+
+			<form action="/auth/login-submit" method="POST">
+				<input type="hidden" name="device_id" value="%s">
+				<div class="form-group">
+					<label>Indirizzo Email</label>
+					<input type="email" name="email" required placeholder="esempio@email.com">
+				</div>
+				<div class="form-group">
+					<label>Password</label>
+					<input type="password" name="password" required placeholder="Inserisci la password">
+				</div>
+				<button type="submit" class="btn-primary">Accedi</button>
+			</form>
+			
+			<div class="footer-link">
+				Non hai ancora un account? <a href="/register?id=%s">Registrati qui</a>
+			</div>
+		</div>
+	</body>
+	</html>
+	`, googleButton, errBlock, deviceID, deviceID)
+}
+
+func (s *Server) handleRegisterUI(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.URL.Query().Get("id")
+	errMessage := r.URL.Query().Get("error")
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	
+	errBlock := ""
+	if errMessage != "" {
+		errBlock = fmt.Sprintf(`<div class="error-msg">%s</div>`, errMessage)
+	}
+
+	fmt.Fprintf(w, `
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<title>WorldTunnel - Registrazione</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<style>
+			body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #fff; text-align: center; padding: 4rem 1rem; margin: 0; }
+			.card { background: #131a2b; display: inline-block; padding: 2.5rem; border-radius: 1rem; border: 1px solid rgba(255,255,255,0.08); max-width: 400px; width: 100%%; box-sizing: border-box; text-align: left; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+			h1 { color: #10b981; font-size: 1.6rem; margin-top: 0; margin-bottom: 0.5rem; text-align: center; font-weight: 700; }
+			p { color: #94a3b8; font-size: 0.9rem; margin-bottom: 2rem; text-align: center; }
+			.form-group { margin-bottom: 1.25rem; }
+			label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; font-weight: 500; }
+			input { width: 100%%; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.1); background: #0b0f19; color: #fff; box-sizing: border-box; font-size: 0.95rem; }
+			input:focus { border-color: #10b981; outline: none; }
+			.btn-primary { background: linear-gradient(135deg, #10b981, #06b6d4); border: none; padding: 0.85rem; border-radius: 0.5rem; font-weight: bold; color: #000; cursor: pointer; width: 100%%; font-size: 0.95rem; margin-top: 0.5rem; transition: opacity 0.2s; }
+			.btn-primary:hover { opacity: 0.9; }
+			.error-msg { background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #f87171; padding: 0.75rem; border-radius: 0.5rem; font-size: 0.85rem; margin-bottom: 1.25rem; }
+			.footer-link { text-align: center; margin-top: 1.5rem; font-size: 0.85rem; color: #94a3b8; }
+			.footer-link a { color: #10b981; text-decoration: none; font-weight: bold; }
+		</style>
+	</head>
+	<body>
+		<div class="card">
+			<h1>Crea Account</h1>
+			<p>Registra un nuovo account per la rete VPN di WorldTunnel</p>
+			
+			%s
+
+			<form action="/auth/register-submit" method="POST">
+				<input type="hidden" name="device_id" value="%s">
+				<div class="form-group">
+					<label>Indirizzo Email</label>
+					<input type="email" name="email" required placeholder="esempio@email.com">
+				</div>
+				<div class="form-group">
+					<label>Password</label>
+					<input type="password" name="password" required placeholder="Scegli una password sicura">
+				</div>
+				<div class="form-group">
+					<label>Conferma Password</label>
+					<input type="password" name="confirm_password" required placeholder="Ripeti la password">
+				</div>
+				<button type="submit" class="btn-primary">Registrati</button>
+			</form>
+			
+			<div class="footer-link">
+				Hai già un account? <a href="/login?id=%s">Accedi qui</a>
+			</div>
+		</div>
+	</body>
+	</html>
+	`, errBlock, deviceID, deviceID)
+}
+
+func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Metodo non consentito", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Altrimenti procedi con il vero Google OAuth
-	redirectURI := fmt.Sprintf("%s/auth/callback", s.publicURL)
-	googleURL := fmt.Sprintf("https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=openid%%20email&state=%s",
-		s.googleClientID, url.QueryEscape(redirectURI), deviceID)
+	deviceID := r.FormValue("device_id")
+	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
+	password := r.FormValue("password")
 
-	http.Redirect(w, r, googleURL, http.StatusTemporaryRedirect)
+	if deviceID == "" || email == "" || password == "" {
+		http.Redirect(w, r, fmt.Sprintf("/login?id=%s&error=%s", deviceID, url.QueryEscape("Tutti i campi sono obbligatori")), http.StatusSeeOther)
+		return
+	}
+
+	s.mu.Lock()
+	user, exists := s.users[email]
+	s.mu.Unlock()
+
+	if !exists || user.Password != hashPassword(password) {
+		http.Redirect(w, r, fmt.Sprintf("/login?id=%s&error=%s", deviceID, url.QueryEscape("Email o password non corretti")), http.StatusSeeOther)
+		return
+	}
+
+	// Associa il dispositivo a questa sessione
+	s.mu.Lock()
+	s.deviceToEmail[deviceID] = email
+	s.mu.Unlock()
+
+	log.Printf("Autenticazione Riuscita! Dispositivo %s associato all'account: %s", deviceID, email)
+	s.serveSuccessPage(w, email)
+}
+
+func (s *Server) handleRegisterSubmit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Metodo non consentito", http.StatusMethodNotAllowed)
+		return
+	}
+
+	deviceID := r.FormValue("device_id")
+	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
+	password := r.FormValue("password")
+	confirmPassword := r.FormValue("confirm_password")
+
+	if deviceID == "" || email == "" || password == "" || confirmPassword == "" {
+		http.Redirect(w, r, fmt.Sprintf("/register?id=%s&error=%s", deviceID, url.QueryEscape("Tutti i campi sono obbligatori")), http.StatusSeeOther)
+		return
+	}
+
+	if password != confirmPassword {
+		http.Redirect(w, r, fmt.Sprintf("/register?id=%s&error=%s", deviceID, url.QueryEscape("Le password non coincidono")), http.StatusSeeOther)
+		return
+	}
+
+	if len(password) < 6 {
+		http.Redirect(w, r, fmt.Sprintf("/register?id=%s&error=%s", deviceID, url.QueryEscape("La password deve contenere almeno 6 caratteri")), http.StatusSeeOther)
+		return
+	}
+
+	s.mu.Lock()
+	_, exists := s.users[email]
+	s.mu.Unlock()
+
+	if exists {
+		http.Redirect(w, r, fmt.Sprintf("/register?id=%s&error=%s", deviceID, url.QueryEscape("Questo indirizzo email è già registrato")), http.StatusSeeOther)
+		return
+	}
+
+	newUser := User{
+		Email:    email,
+		Password: hashPassword(password),
+	}
+
+	s.mu.Lock()
+	s.users[email] = newUser
+	s.saveUsers()
+	s.mu.Unlock()
+
+	log.Printf("Nuovo utente registrato con successo: %s", email)
+
+	// Effettua subito l'autenticazione per questo dispositivo
+	s.mu.Lock()
+	s.deviceToEmail[deviceID] = email
+	s.mu.Unlock()
+
+	s.serveSuccessPage(w, email)
 }
 
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.FormValue("code")
-	deviceID := r.FormValue("state") // Contiene l'ID del dispositivo passato nello state
+	deviceID := r.FormValue("state")
 
 	if code == "" || deviceID == "" {
 		http.Error(w, "Dati di autenticazione non validi", http.StatusBadRequest)
@@ -320,7 +604,6 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	redirectURI := fmt.Sprintf("%s/auth/callback", s.publicURL)
 
-	// Scambia il codice per il token di accesso
 	tokenRes, err := http.PostForm("https://oauth2.googleapis.com/token", url.Values{
 		"code":          {code},
 		"client_id":     {s.googleClientID},
@@ -342,7 +625,6 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Usa il token per recuperare l'email dell'utente da Google
 	req, _ := http.NewRequest("GET", "https://www.googleapis.com/oauth2/v2/userinfo", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenData.AccessToken)
 	
@@ -362,72 +644,16 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if userInfo.Email == "" {
-		http.Error(w, "Impossibile recuperare l'indirizzo email dell'account", http.StatusBadRequest)
+		http.Error(w, "Impossibile recuperare l'indirizzo email", http.StatusBadRequest)
 		return
 	}
 
-	// Associa il dispositivo a questa email
 	s.mu.Lock()
 	s.deviceToEmail[deviceID] = userInfo.Email
 	s.mu.Unlock()
 
-	log.Printf("Autenticazione Riuscita! Dispositivo %s associato a %s", deviceID, userInfo.Email)
-
+	log.Printf("Autenticazione Riuscita! Dispositivo %s associato a %s via Google OAuth", deviceID, userInfo.Email)
 	s.serveSuccessPage(w, userInfo.Email)
-}
-
-func (s *Server) serveMockLoginPage(w http.ResponseWriter, deviceID string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `
-	<!DOCTYPE html>
-	<html>
-	<head>
-		<title>WorldTunnel - Login di Test</title>
-		<style>
-			body { font-family: sans-serif; background-color: #0b0f19; color: #fff; text-align: center; padding-top: 5rem; }
-			.card { background: #131a2b; display: inline-block; padding: 2.5rem; border-radius: 1rem; border: 1px solid rgba(255,255,255,0.08); max-width: 400px; }
-			h1 { color: #06b6d4; font-size: 1.5rem; margin-bottom: 1rem; }
-			input { width: 100%%; padding: 0.75rem; margin: 1rem 0; border-radius: 0.5rem; border: 1px solid #333; background: #0b0f19; color: #fff; box-sizing: border-box; }
-			button { background: linear-gradient(135deg, #06b6d4, #10b981); border: none; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: bold; cursor: pointer; width: 100%%; }
-		</style>
-	</head>
-	<body>
-		<div class="card">
-			<h1>WorldTunnel Simulator</h1>
-			<p>Credenziali Google OAuth non impostate sul server. Esegui l'accesso simulato inserendo un'email fittizia:</p>
-			<form action="/auth/mock" method="POST">
-				<input type="hidden" name="device_id" value="%s">
-				<input type="email" name="email" placeholder="latuaemail@gmail.com" required value="utente@gmail.com">
-				<button type="submit">Accedi (Simulato)</button>
-			</form>
-		</div>
-	</body>
-	</html>
-	`, deviceID)
-}
-
-func (s *Server) handleMockLoginSubmit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Metodo non consentito", http.StatusMethodNotAllowed)
-		return
-	}
-
-	deviceID := r.FormValue("device_id")
-	email := r.FormValue("email")
-
-	if deviceID == "" || email == "" {
-		http.Error(w, "Parametri mancanti", http.StatusBadRequest)
-		return
-	}
-
-	// Associa il dispositivo a questa email di test
-	s.mu.Lock()
-	s.deviceToEmail[deviceID] = email
-	s.mu.Unlock()
-
-	log.Printf("Autenticazione Simulata! Dispositivo %s associato a %s", deviceID, email)
-
-	s.serveSuccessPage(w, email)
 }
 
 func (s *Server) serveSuccessPage(w http.ResponseWriter, email string) {
@@ -437,19 +663,21 @@ func (s *Server) serveSuccessPage(w http.ResponseWriter, email string) {
 	<html>
 	<head>
 		<title>WorldTunnel - Accesso Eseguito</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 		<style>
-			body { font-family: sans-serif; background-color: #0b0f19; color: #fff; text-align: center; padding-top: 6rem; }
-			.card { background: #131a2b; display: inline-block; padding: 3rem; border-radius: 1rem; border: 1px solid rgba(255,255,255,0.08); }
-			h1 { color: #10b981; margin-bottom: 1rem; }
-			p { color: #94a3b8; }
-			.email { font-weight: bold; color: #06b6d4; }
+			body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #fff; text-align: center; padding: 6rem 1rem; margin: 0; }
+			.card { background: #131a2b; display: inline-block; padding: 3rem 2.5rem; border-radius: 1rem; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 4px 20px rgba(0,0,0,0.3); max-width: 400px; width: 100%%; box-sizing: border-box; }
+			h1 { color: #10b981; margin-top: 0; margin-bottom: 1rem; font-size: 1.5rem; font-weight: 700; }
+			p { color: #94a3b8; font-size: 0.95rem; line-height: 1.6; }
+			.email { font-weight: bold; color: #06b6d4; display: block; margin: 0.5rem 0; font-size: 1.1rem; }
 		</style>
 	</head>
 	<body>
 		<div class="card">
-			<h1>Accesso Eseguito con Successo!</h1>
-			<p>Il tuo dispositivo è ora associato all'account: <span class="email">%s</span></p>
-			<p>Puoi chiudere questa scheda. Il client si connetterà automaticamente.</p>
+			<h1>Accesso Eseguito!</h1>
+			<p>Il tuo dispositivo è stato associato con successo all'account:</p>
+			<span class="email">%s</span>
+			<p>Puoi chiudere questa pagina. Il client desktop si collegherà automaticamente in pochi istanti.</p>
 		</div>
 	</body>
 	</html>
@@ -460,8 +688,8 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Esporta solo dati non sensibili per diagnostica
 	status := map[string]interface{}{
+		"registered_users":      len(s.users),
 		"authenticated_devices": len(s.deviceToEmail),
 		"active_networks":       len(s.clients),
 	}
@@ -475,8 +703,10 @@ func main() {
 
 	http.HandleFunc("/ws", server.handleConnection)
 	http.HandleFunc("/login", server.handleLogin)
+	http.HandleFunc("/register", server.handleRegisterUI)
+	http.HandleFunc("/auth/login-submit", server.handleLoginSubmit)
+	http.HandleFunc("/auth/register-submit", server.handleRegisterSubmit)
 	http.HandleFunc("/auth/callback", server.handleAuthCallback)
-	http.HandleFunc("/auth/mock", server.handleMockLoginSubmit)
 	
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -488,7 +718,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Server di coordinamento WorldTunnel (con Google OAuth / Mock) avviato sulla porta %s...", port)
+	log.Printf("Server di coordinamento WorldTunnel (con Database utenti e Google OAuth) avviato sulla porta %s...", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Errore all'avvio del server: %v", err)
 	}

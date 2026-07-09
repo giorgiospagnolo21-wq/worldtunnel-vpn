@@ -25,7 +25,7 @@ import (
 //go:embed ui/*
 var uiFS embed.FS
 
-//go:embed ui/icon.png
+//go:embed ui/icon_tray.png
 var iconBytes []byte
 
 type Agent struct {
@@ -520,8 +520,16 @@ func main() {
 
 	// Inizializzazione e avvio del System Tray
 	tray := systray.New().SetIcon(iconBytes).SetTooltip("WorldTunnel Client")
-	menu := systray.NewMenu()
+	
+	// Registriamo i gestori per il click e il doppio click sull'icona del tray
+	tray.OnClick(func() {
+		openWebView(*portFlag)
+	})
+	tray.OnDoubleClick(func() {
+		openWebView(*portFlag)
+	})
 
+	menu := systray.NewMenu()
 	menu.Add("Apri Pannello di Controllo", func() {
 		openWebView(*portFlag)
 	})
