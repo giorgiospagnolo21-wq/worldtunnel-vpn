@@ -10,45 +10,51 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"os/signal"
+	"runtime"
 	"sync"
-	"syscall"
 	"time"
 
 	"worldtunnel/pkg/tun"
 	"worldtunnel/pkg/webrtc"
 
+	"github.com/gogpu/systray"
 	"github.com/gorilla/websocket"
+	webview2 "github.com/jchv/go-webview2"
 )
 
 //go:embed ui/*
 var uiFS embed.FS
 
+//go:embed ui/icon.png
+var iconBytes []byte
+
 type Agent struct {
-	mu           sync.RWMutex
-	localID      string
-	localIP      string
-	serverURL    string
-	ifaceName    string
-	networkKey   string
-	requestedIP  string
-	wsConn       *websocket.Conn
-	tunDev       tun.Tuner
-	webrtcMgr    *webrtc.Manager
-	wsMutex      sync.Mutex
-	done         chan struct{}
-	peersStatus  []webrtc.PeerStatus
+	mu            sync.RWMutex
+	localID       string
+	localIP       string
+	serverURL     string
+	ifaceName     string
+	networkKey    string
+	requestedIP   string
+	authenticated bool
+	authError     string
+	wsConn        *websocket.Conn
+	tunDev        tun.Tuner
+	webrtcMgr     *webrtc.Manager
+	wsMutex       sync.Mutex
+	done          chan struct{}
+	peersStatus   []webrtc.PeerStatus
 }
 
 func NewAgent(localID, serverURL, ifaceName, networkKey, requestedIP string) *Agent {
 	return &Agent{
-		localID:     localID,
-		serverURL:   serverURL,
-		ifaceName:   ifaceName,
-		networkKey:  networkKey,
-		requestedIP: requestedIP,
-		done:        make(chan struct{}),
+		localID:       localID,
+		serverURL:     serverURL,
+		ifaceName:     ifaceName,
+		networkKey:    networkKey,
+		requestedIP:   requestedIP,
+		authenticated: false,
+		done:          make(chan struct{}),
 	}
 }
 
@@ -154,10 +160,17 @@ func (a *Agent) handleSignalingLoop() {
 				json.Unmarshal(rawMsg["error"], &errStr)
 			}
 			if errStr != "" {
-				showErrorDialog("Errore di Registrazione Server", 
-					fmt.Sprintf("Il server ha rifiutato la connessione:\n\n%s", errStr))
-				log.Printf("Registrazione rifiutata dal server: %s", errStr)
-				continue
+				a.mu.Lock()
+				a.authenticated = false
+				if errStr == "device_not_authenticated" {
+					a.authError = "device_not_authenticated"
+				} else {
+					a.authError = errStr
+				}
+				a.mu.Unlock()
+				log.Printf("Registrazione rifiuta dal server: %s", errStr)
+				// Interrompiamo la connessione corrente per riprovare
+				return
 			}
 
 			var ip string
@@ -208,6 +221,9 @@ func (a *Agent) handleSignalingLoop() {
 func (a *Agent) handleRegistration(ip string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	a.authenticated = true
+	a.authError = ""
 
 	if a.localIP == ip {
 		return // IP già configurato
@@ -365,13 +381,15 @@ func (a *Agent) GetStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"id":           a.localID,
-		"virtual_ip":   a.localIP,
-		"requested_ip": a.requestedIP,
-		"server":       a.serverURL,
-		"network_key":  a.networkKey,
-		"online":       a.wsConn != nil,
-		"peers":        peers,
+		"id":            a.localID,
+		"virtual_ip":    a.localIP,
+		"requested_ip":  a.requestedIP,
+		"server":        a.serverURL,
+		"network_key":   a.networkKey,
+		"online":        a.wsConn != nil,
+		"authenticated": a.authenticated,
+		"auth_error":    a.authError,
+		"peers":         peers,
 	}
 }
 
@@ -388,11 +406,48 @@ func (a *Agent) Close() {
 	}
 }
 
+var webviewActive bool
+var webviewMutex sync.Mutex
+
+func openWebView(port string) {
+	webviewMutex.Lock()
+	if webviewActive {
+		webviewMutex.Unlock()
+		return
+	}
+	webviewActive = true
+	webviewMutex.Unlock()
+
+	go func() {
+		defer func() {
+			webviewMutex.Lock()
+			webviewActive = false
+			webviewMutex.Unlock()
+		}()
+
+		runtime.LockOSThread()
+		w := webview2.NewWithOptions(webview2.WebViewOptions{
+			AutoFocus: true,
+			WindowOptions: webview2.WindowOptions{
+				Title:  "WorldTunnel Control Panel",
+				Width:  1024,
+				Height: 720,
+				Center: true,
+			},
+		})
+		if w != nil {
+			defer w.Destroy()
+			w.Navigate("http://localhost:" + port)
+			w.Run()
+		}
+	}()
+}
+
 func main() {
 	// Eseguiamo il controllo di elevazione UAC prima di tutto
 	checkAndElevate()
 
-	serverFlag := flag.String("server", "ws://localhost:8080/ws", "URL del server di coordinamento")
+	serverFlag := flag.String("server", "wss://worldtunnel-vpn.onrender.com/ws", "URL del server di coordinamento")
 	idFlag := flag.String("id", "", "ID univoco per questo PC (lascia vuoto per usare il nome del PC)")
 	portFlag := flag.String("port", "8000", "Porta locale per l'interfaccia web di controllo")
 	ifaceFlag := flag.String("iface", "worldtunnel", "Nome dell'interfaccia di rete virtuale")
@@ -463,20 +518,27 @@ func main() {
 		}
 	}()
 
-	// Apriamo automaticamente la dashboard nel browser predefinito all'avvio
-	go func() {
-		time.Sleep(1 * time.Second)
-		log.Printf("Apertura automatica della dashboard su http://localhost:%s...", *portFlag)
-		exec.Command("cmd", "/c", "start", "http://localhost:"+*portFlag).Start()
-	}()
+	// Inizializzazione e avvio del System Tray
+	tray := systray.New().SetIcon(iconBytes).SetTooltip("WorldTunnel Client")
+	menu := systray.NewMenu()
 
-	// Gestione interruzione da terminale per una chiusura pulita
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	menu.Add("Apri Pannello di Controllo", func() {
+		openWebView(*portFlag)
+	})
 
-	log.Println("Spegnimento dell'agente e ripristino schede di rete...")
-	agent.Close()
-	time.Sleep(500 * time.Millisecond)
-	log.Println("Uscita completata.")
+	menu.Add("Esci", func() {
+		log.Println("Spegnimento dell'agente e ripristino schede di rete...")
+		agent.Close()
+		time.Sleep(500 * time.Millisecond)
+		os.Exit(0)
+	})
+
+	tray.SetMenu(menu)
+	tray.Show()
+
+	// Apriamo automaticamente la dashboard integrata all'avvio
+	openWebView(*portFlag)
+
+	// Rimaniamo in esecuzione
+	select {}
 }

@@ -150,6 +150,23 @@ func (d *WindowsDevice) configureIP() error {
 			return fmt.Errorf("fallito anche con PowerShell: %v, output: %s", err, string(output))
 		}
 	}
+
+	// Configura il firewall di Windows per consentire tutto il traffico su questa interfaccia
+	log.Printf("Configurazione regole Firewall per l'interfaccia %s...", d.cfg.Name)
+	exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name=WorldTunnel-"+d.cfg.Name).Run()
+	fwCmd := exec.Command("netsh", "advfirewall", "firewall", "add", "rule", 
+		"name=WorldTunnel-"+d.cfg.Name, 
+		"dir=in", 
+		"action=allow", 
+		"interface="+d.cfg.Name, 
+		"enable=yes",
+	)
+	if fwOut, fwErr := fwCmd.CombinedOutput(); fwErr != nil {
+		log.Printf("Avviso: Impossibile creare regola firewall automatica (%v): %s", fwErr, string(fwOut))
+	} else {
+		log.Printf("Firewall configurato: consentito tutto il traffico in ingresso sulla scheda %s", d.cfg.Name)
+	}
+
 	return nil
 }
 
