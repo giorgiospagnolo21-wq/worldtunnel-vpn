@@ -136,6 +136,10 @@ func CreateDevice(cfg Config) (Tuner, error) {
 }
 
 func (d *WindowsDevice) configureIP() error {
+	// Rimuoviamo eventuali indirizzi IP preesistenti sulla scheda per evitare l'errore "L'oggetto esiste già"
+	removeCmd := fmt.Sprintf("Remove-NetIPAddress -InterfaceAlias '%s' -Confirm:$false -ErrorAction SilentlyContinue", d.cfg.Name)
+	_ = exec.Command("powershell", "-Command", removeCmd).Run()
+
 	// Usiamo netsh per configurare l'indirizzo IP
 	// netsh interface ip set address name="NOME" static IP MASK
 	cmd := exec.Command("netsh", "interface", "ip", "set", "address", "name="+d.cfg.Name, "static", d.cfg.IP, "255.255.255.0", "store=active")

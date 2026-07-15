@@ -716,6 +716,88 @@ func (s *Server) serveSuccessPage(w http.ResponseWriter, email string) {
 	`, email)
 }
 
+func (s *Server) handleLoginDirect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	var req struct {
+		DeviceID string `json:"device_id"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+
+	s.mu.Lock()
+	user, exists := s.users[email]
+	s.mu.Unlock()
+
+	if !exists || user.Password != hashPassword(req.Password) {
+		http.Error(w, `{"error":"Email o password errati"}`, http.StatusUnauthorized)
+		return
+	}
+
+	s.mu.Lock()
+	s.deviceToEmail[req.DeviceID] = email
+	s.saveSessions()
+	s.mu.Unlock()
+
+	log.Printf("Autenticazione Diretta Riuscita! Dispositivo %s associato a %s", req.DeviceID, email)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) handleRegisterDirect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	var req struct {
+		DeviceID string `json:"device_id"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+
+	if len(req.Password) < 6 {
+		http.Error(w, `{"error":"La password deve essere di almeno 6 caratteri"}`, http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	_, exists := s.users[email]
+	s.mu.Unlock()
+
+	if exists {
+		http.Error(w, `{"error":"Questo indirizzo email è già registrato"}`, http.StatusConflict)
+		return
+	}
+
+	newUser := User{
+		Email:    email,
+		Password: hashPassword(req.Password),
+	}
+
+	s.mu.Lock()
+	s.users[email] = newUser
+	s.saveUsers()
+	s.deviceToEmail[req.DeviceID] = email
+	s.saveSessions()
+	s.mu.Unlock()
+
+	log.Printf("Registrazione Diretta Riuscita! Creato utente %s per dispositivo %s", email, req.DeviceID)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
 func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -738,6 +820,8 @@ func main() {
 	http.HandleFunc("/register", server.handleRegisterUI)
 	http.HandleFunc("/auth/login-submit", server.handleLoginSubmit)
 	http.HandleFunc("/auth/register-submit", server.handleRegisterSubmit)
+	http.HandleFunc("/auth/login-direct", server.handleLoginDirect)
+	http.HandleFunc("/auth/register-direct", server.handleRegisterDirect)
 	http.HandleFunc("/auth/callback", server.handleAuthCallback)
 	
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

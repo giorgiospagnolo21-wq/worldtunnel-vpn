@@ -58,6 +58,48 @@ func (lb *LogBuffer) GetLines() []string {
 	return copied
 }
 
+type ClientConfig struct {
+	Server      string `json:"server"`
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	RequestedIP string `json:"requested_ip"`
+}
+
+func loadConfig() ClientConfig {
+	var cfg ClientConfig
+	file, err := os.Open("config.json")
+	if err != nil {
+		return ClientConfig{
+			Server:      "wss://worldtunnel-vpn.onrender.com/ws",
+			RequestedIP: "",
+		}
+	}
+	defer file.Close()
+
+	if err := json.NewDecoder(file).Decode(&cfg); err != nil {
+		log.Printf("Impossibile caricare config.json: %v. Uso impostazioni predefinite.", err)
+		return ClientConfig{
+			Server:      "wss://worldtunnel-vpn.onrender.com/ws",
+			RequestedIP: "",
+		}
+	}
+	if cfg.Server == "" {
+		cfg.Server = "wss://worldtunnel-vpn.onrender.com/ws"
+	}
+	return cfg
+}
+
+func saveConfig(cfg ClientConfig) {
+	file, err := os.Create("config.json")
+	if err != nil {
+		log.Printf("Errore durante il salvataggio di config.json: %v", err)
+		return
+	}
+	defer file.Close()
+
+	json.NewEncoder(file).Encode(cfg)
+}
+
 //go:embed ui/*
 var uiFS embed.FS
 
@@ -72,6 +114,8 @@ type Agent struct {
 	ifaceName     string
 	networkKey    string
 	requestedIP   string
+	email         string
+	password      string
 	authenticated bool
 	authError     string
 	wsConn        *websocket.Conn
@@ -80,6 +124,19 @@ type Agent struct {
 	wsMutex       sync.Mutex
 	done          chan struct{}
 	peersStatus   []webrtc.PeerStatus
+}
+
+func (a *Agent) saveLocalConfig() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cfg := ClientConfig{
+		Server:      a.serverURL,
+		Email:       a.email,
+		Password:    a.password,
+		RequestedIP: a.requestedIP,
+	}
+	saveConfig(cfg)
 }
 
 func NewAgent(localID, serverURL, ifaceName, networkKey, requestedIP string) *Agent {
@@ -95,15 +152,50 @@ func NewAgent(localID, serverURL, ifaceName, networkKey, requestedIP string) *Ag
 }
 
 func (a *Agent) connectSignaling() error {
-	u, err := url.Parse(a.serverURL)
+	a.mu.Lock()
+	serverURL := a.serverURL
+	localID := a.localID
+	email := a.email
+	password := a.password
+	requestedIP := a.requestedIP
+	a.mu.Unlock()
+
+	// Se abbiamo email e password locali, tentiamo un login diretto http preventivo
+	if email != "" && password != "" {
+		loginURL := strings.Replace(serverURL, "wss://", "https://", 1)
+		loginURL = strings.Replace(loginURL, "ws://", "http://", 1)
+		loginURL = strings.TrimSuffix(loginURL, "/ws") + "/auth/login-direct"
+
+		log.Printf("Autenticazione automatica sul server per account %s...", email)
+
+		reqBody, _ := json.Marshal(map[string]string{
+			"device_id": localID,
+			"email":     email,
+			"password":  password,
+		})
+
+		resp, err := http.Post(loginURL, "application/json", strings.NewReader(string(reqBody)))
+		if err != nil {
+			log.Printf("Errore chiamata login automatico: %v. Procedo con WebSocket...", err)
+		} else {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				log.Printf("Autenticazione automatica riuscita!")
+			} else {
+				log.Printf("Autenticazione automatica non riuscita (Stato: %d). Potrebbe essere richiesta la riautenticazione.", resp.StatusCode)
+			}
+		}
+	}
+
+	u, err := url.Parse(serverURL)
 	if err != nil {
 		return err
 	}
 	q := u.Query()
-	q.Set("id", a.localID)
-	q.Set("key", a.networkKey)
-	if a.requestedIP != "" {
-		q.Set("ip", a.requestedIP)
+	q.Set("id", localID)
+	q.Set("key", email)
+	if requestedIP != "" {
+		q.Set("ip", requestedIP)
 	}
 	u.RawQuery = q.Encode()
 
@@ -490,12 +582,14 @@ func main() {
 	// Eseguiamo il controllo di elevazione UAC prima di tutto
 	checkAndElevate()
 
-	serverFlag := flag.String("server", "wss://worldtunnel-vpn.onrender.com/ws", "URL del server di coordinamento")
+	localCfg := loadConfig()
+
+	serverFlag := flag.String("server", localCfg.Server, "URL del server di coordinamento")
 	idFlag := flag.String("id", "", "ID univoco per questo PC (lascia vuoto per usare il nome del PC)")
 	portFlag := flag.String("port", "8000", "Porta locale per l'interfaccia web di controllo")
 	ifaceFlag := flag.String("iface", "worldtunnel", "Nome dell'interfaccia di rete virtuale")
 	keyFlag := flag.String("key", "default_network", "Chiave di rete (account)")
-	ipFlag := flag.String("ip", "", "Indirizzo IP virtuale statico richiesto (es. 10.0.0.5)")
+	ipFlag := flag.String("ip", localCfg.RequestedIP, "Indirizzo IP virtuale statico richiesto (es. 10.0.0.5)")
 
 	flag.Parse()
 
@@ -508,6 +602,8 @@ func main() {
 	}
 
 	agent := NewAgent(*idFlag, *serverFlag, *ifaceFlag, *keyFlag, *ipFlag)
+	agent.email = localCfg.Email
+	agent.password = localCfg.Password
 	go agent.run()
 
 	// Gestione dei file statici della UI incorporati (embed)
@@ -528,6 +624,128 @@ func main() {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		json.NewEncoder(w).Encode(globalLogBuffer.GetLines())
 	})
+	http.HandleFunc("/api/login-submit", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		email := r.URL.Query().Get("email")
+		password := r.URL.Query().Get("password")
+
+		if email == "" || password == "" {
+			w.Write([]byte(`{"status":"error","error":"Email e Password sono obbligatori"}`))
+			return
+		}
+
+		agent.mu.Lock()
+		serverURL := agent.serverURL
+		localID := agent.localID
+		agent.mu.Unlock()
+
+		loginURL := strings.Replace(serverURL, "wss://", "https://", 1)
+		loginURL = strings.Replace(loginURL, "ws://", "http://", 1)
+		loginURL = strings.TrimSuffix(loginURL, "/ws") + "/auth/login-direct"
+
+		reqBody, _ := json.Marshal(map[string]string{
+			"device_id": localID,
+			"email":     email,
+			"password":  password,
+		})
+
+		resp, err := http.Post(loginURL, "application/json", strings.NewReader(string(reqBody)))
+		if err != nil {
+			w.Write([]byte(fmt.Sprintf(`{"status":"error","error":"Server non raggiungibile: %v"}`, err)))
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			var errData struct {
+				Error string `json:"error"`
+			}
+			json.NewDecoder(resp.Body).Decode(&errData)
+			if errData.Error == "" {
+				errData.Error = fmt.Sprintf("Codice stato: %d", resp.StatusCode)
+			}
+			w.Write([]byte(fmt.Sprintf(`{"status":"error","error":"%s"}`, errData.Error)))
+			return
+		}
+
+		agent.mu.Lock()
+		agent.email = email
+		agent.password = password
+		agent.mu.Unlock()
+
+		agent.saveLocalConfig()
+
+		agent.wsMutex.Lock()
+		if agent.wsConn != nil {
+			agent.wsConn.Close()
+		}
+		agent.wsMutex.Unlock()
+
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+	http.HandleFunc("/api/register-submit", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		email := r.URL.Query().Get("email")
+		password := r.URL.Query().Get("password")
+
+		if email == "" || password == "" {
+			w.Write([]byte(`{"status":"error","error":"Email e Password sono obbligatori"}`))
+			return
+		}
+
+		agent.mu.Lock()
+		serverURL := agent.serverURL
+		localID := agent.localID
+		agent.mu.Unlock()
+
+		registerURL := strings.Replace(serverURL, "wss://", "https://", 1)
+		registerURL = strings.Replace(registerURL, "ws://", "http://", 1)
+		registerURL = strings.TrimSuffix(registerURL, "/ws") + "/auth/register-direct"
+
+		reqBody, _ := json.Marshal(map[string]string{
+			"device_id": localID,
+			"email":     email,
+			"password":  password,
+		})
+
+		resp, err := http.Post(registerURL, "application/json", strings.NewReader(string(reqBody)))
+		if err != nil {
+			w.Write([]byte(fmt.Sprintf(`{"status":"error","error":"Server non raggiungibile: %v"}`, err)))
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			var errData struct {
+				Error string `json:"error"`
+			}
+			json.NewDecoder(resp.Body).Decode(&errData)
+			if errData.Error == "" {
+				errData.Error = fmt.Sprintf("Codice stato: %d", resp.StatusCode)
+			}
+			w.Write([]byte(fmt.Sprintf(`{"status":"error","error":"%s"}`, errData.Error)))
+			return
+		}
+
+		agent.mu.Lock()
+		agent.email = email
+		agent.password = password
+		agent.mu.Unlock()
+
+		agent.saveLocalConfig()
+
+		agent.wsMutex.Lock()
+		if agent.wsConn != nil {
+			agent.wsConn.Close()
+		}
+		agent.wsMutex.Unlock()
+
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 	http.HandleFunc("/api/configure", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -544,6 +762,8 @@ func main() {
 		}
 		agent.requestedIP = newIP // Se vuoto, ritorna a dynamic allocation
 		agent.mu.Unlock()
+
+		agent.saveLocalConfig()
 
 		log.Printf("Configurazione aggiornata -> Server: '%s', Account: '%s', IP Richiesto: '%s'. Riconnessione in corso...", agent.serverURL, agent.networkKey, agent.requestedIP)
 
