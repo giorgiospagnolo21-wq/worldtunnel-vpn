@@ -330,6 +330,116 @@
                 box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
             }
         }
+
+        /* Pulsante Log */
+        .btn-log {
+            background: rgba(6, 182, 212, 0.1);
+            border: 1px solid rgba(6, 182, 212, 0.3);
+            color: var(--color-teal);
+            font-weight: 700;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .btn-log:hover {
+            background: rgba(6, 182, 212, 0.2);
+            border-color: var(--color-teal);
+            box-shadow: 0 0 10px rgba(6, 182, 212, 0.2);
+        }
+
+        /* Modal dei Log */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            width: 90%;
+            max-width: 800px;
+            height: 80%;
+            border-radius: 1rem;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+        .modal-header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h3 {
+            margin: 0;
+            color: var(--color-teal);
+            font-size: 1.15rem;
+        }
+        .close-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.8rem;
+            cursor: pointer;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+        .close-btn:hover {
+            color: #ef4444;
+        }
+        .modal-body {
+            flex: 1;
+            padding: 1.5rem;
+            background: #070913;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Courier New', Courier, monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+        #log-console {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: #a7f3d0;
+        }
+        .modal-overlay-custom {
+            display: none;
+        }
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+        }
+        .btn-primary-small {
+            background: linear-gradient(135deg, var(--color-teal), var(--color-green));
+            border: none;
+            color: #000;
+            font-weight: 700;
+            padding: 0.5rem 1.25rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: opacity 0.2s;
+        }
+        .btn-primary-small:hover {
+            opacity: 0.9;
+        }
     </style>
 </head>
 <body>
@@ -339,9 +449,15 @@
             <div class="logo-icon">W</div>
             <div class="logo-text">WorldTunnel</div>
         </div>
-        <div class="status-badge" id="signaling-status">
-            <span class="indicator offline" id="status-indicator"></span>
-            <span id="status-text">Connessione...</span>
+        <div style="display: flex; align-items: center; gap: 1rem;">
+            <button class="btn-log" onclick="openLogModal()" title="Visualizza Log di Sistema">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 5px;"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                Log
+            </button>
+            <div class="status-badge" id="signaling-status">
+                <span class="indicator offline" id="status-indicator"></span>
+                <span id="status-text">Connessione...</span>
+            </div>
         </div>
     </header>
 
@@ -428,7 +544,51 @@
         WorldTunnel VPN Mesh • Crittografia End-to-End via WebRTC • Sviluppato per prestazioni ottimali
     </footer>
 
+    <!-- Modal dei Log -->
+    <div id="log-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Log di Sistema WorldTunnel</h3>
+                <button class="close-btn" onclick="closeLogModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <pre id="log-console"></pre>
+            </div>
+            <div class="modal-footer">
+                <button onclick="fetchLogs()" class="btn-primary-small">Aggiorna</button>
+            </div>
+        </div>
+    </div>
+
     <script>
+        let logInterval = null;
+
+        async function fetchLogs() {
+            try {
+                const response = await fetch('/api/logs');
+                const logs = await response.json();
+                const consoleEl = document.getElementById('log-console');
+                consoleEl.innerText = logs.join('\n');
+                const bodyEl = consoleEl.parentElement;
+                bodyEl.scrollTop = bodyEl.scrollHeight;
+            } catch (error) {
+                console.error("Errore fetch logs:", error);
+            }
+        }
+
+        function openLogModal() {
+            document.getElementById('log-modal').style.display = 'flex';
+            fetchLogs();
+            logInterval = setInterval(fetchLogs, 1500);
+        }
+
+        function closeLogModal() {
+            document.getElementById('log-modal').style.display = 'none';
+            if (logInterval) {
+                clearInterval(logInterval);
+                logInterval = null;
+            }
+        }
         function copyToClipboard(elementId) {
             const text = document.getElementById(elementId).innerText;
             if (text === "--") return;

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,41 @@ import (
 	"github.com/gorilla/websocket"
 	webview2 "github.com/jchv/go-webview2"
 )
+
+type LogBuffer struct {
+	mu    sync.Mutex
+	lines []string
+	max   int
+}
+
+var globalLogBuffer = &LogBuffer{
+	max: 100,
+}
+
+func (lb *LogBuffer) Write(p []byte) (n int, err error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	line := string(p)
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+
+	lb.lines = append(lb.lines, line)
+	if len(lb.lines) > lb.max {
+		lb.lines = lb.lines[1:]
+	}
+
+	return os.Stdout.Write(p)
+}
+
+func (lb *LogBuffer) GetLines() []string {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	copied := make([]string, len(lb.lines))
+	copy(copied, lb.lines)
+	return copied
+}
 
 //go:embed ui/*
 var uiFS embed.FS
@@ -444,6 +480,9 @@ func openWebView(port string) {
 }
 
 func main() {
+	// Reindirizza l'output del log al nostro buffer in memoria per la UI
+	log.SetOutput(globalLogBuffer)
+
 	// Eseguiamo il controllo di elevazione UAC prima di tutto
 	checkAndElevate()
 
@@ -479,6 +518,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		json.NewEncoder(w).Encode(agent.GetStatus())
+	})
+	http.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(globalLogBuffer.GetLines())
 	})
 	http.HandleFunc("/api/configure", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -547,6 +591,8 @@ func main() {
 	// Apriamo automaticamente la dashboard integrata all'avvio
 	openWebView(*portFlag)
 
-	// Rimaniamo in esecuzione
-	select {}
+	// Eseguiamo il ciclo dei messaggi di Windows (blocca fino a quando non usciamo)
+	if err := tray.Run(); err != nil {
+		log.Printf("Errore nell'esecuzione del System Tray: %v", err)
+	}
 }
