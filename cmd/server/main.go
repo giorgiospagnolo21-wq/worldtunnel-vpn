@@ -79,6 +79,7 @@ func NewServer() *Server {
 	}
 
 	s.loadUsers()
+	s.loadSessions()
 	return s
 }
 
@@ -86,6 +87,34 @@ func hashPassword(password string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(password + "worldtunnel_secret_salt"))
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func (s *Server) loadSessions() {
+	file, err := os.Open("sessions.json")
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	if err := json.NewDecoder(file).Decode(&s.deviceToEmail); err != nil {
+		log.Printf("Errore decodifica sessioni: %v", err)
+		s.deviceToEmail = make(map[string]string)
+	} else {
+		log.Printf("Caricate %d sessioni attive da sessions.json", len(s.deviceToEmail))
+	}
+}
+
+func (s *Server) saveSessions() {
+	file, err := os.Create("sessions.json")
+	if err != nil {
+		log.Printf("Errore creazione file sessioni: %v", err)
+		return
+	}
+	defer file.Close()
+
+	if err := json.NewEncoder(file).Encode(s.deviceToEmail); err != nil {
+		log.Printf("Errore salvataggio sessioni: %v", err)
+	}
 }
 
 func (s *Server) loadUsers() {
@@ -532,6 +561,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	// Associa il dispositivo a questa sessione
 	s.mu.Lock()
 	s.deviceToEmail[deviceID] = email
+	s.saveSessions()
 	s.mu.Unlock()
 
 	log.Printf("Autenticazione Riuscita! Dispositivo %s associato all'account: %s", deviceID, email)
@@ -588,6 +618,7 @@ func (s *Server) handleRegisterSubmit(w http.ResponseWriter, r *http.Request) {
 	// Effettua subito l'autenticazione per questo dispositivo
 	s.mu.Lock()
 	s.deviceToEmail[deviceID] = email
+	s.saveSessions()
 	s.mu.Unlock()
 
 	s.serveSuccessPage(w, email)
@@ -650,6 +681,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.deviceToEmail[deviceID] = userInfo.Email
+	s.saveSessions()
 	s.mu.Unlock()
 
 	log.Printf("Autenticazione Riuscita! Dispositivo %s associato a %s via Google OAuth", deviceID, userInfo.Email)

@@ -154,6 +154,9 @@ func (a *Agent) run() {
 			}
 
 			a.handleSignalingLoop()
+			
+			// Attendi 5 secondi dopo la chiusura prima di ricollegarti (evita loop stretto)
+			time.Sleep(5 * time.Second)
 		}
 	}
 }
@@ -261,11 +264,12 @@ func (a *Agent) handleRegistration(ip string) {
 	a.authenticated = true
 	a.authError = ""
 
+	log.Printf("Registrazione confermata dal server! IP Virtuale: %s", ip)
+
 	if a.localIP == ip {
 		return // IP già configurato
 	}
 
-	log.Printf("Registrazione completata. IP Virtuale assegnato dal server: %s", ip)
 	a.localIP = ip
 
 	// Se esiste un vecchio device, chiudilo
