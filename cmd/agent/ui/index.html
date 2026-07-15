@@ -462,6 +462,68 @@
         .btn-primary-small:hover {
             opacity: 0.9;
         }
+
+        /* Punto di avviso errore log */
+        .error-dot {
+            position: absolute;
+            top: -2px;
+            right: -2px;
+            width: 8px;
+            height: 8px;
+            background-color: #ef4444;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #ef4444;
+            animation: pulse-red-dot 1.5s infinite;
+        }
+        @keyframes pulse-red-dot {
+            0% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+            70% {
+                box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+
+        /* Notification Toast */
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            background: #131a2b;
+            border: 1px solid var(--border-color);
+            padding: 1rem 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            z-index: 1001;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            pointer-events: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .toast-success {
+            border-color: var(--color-green);
+            color: #10b981;
+        }
+        .toast-error {
+            border-color: #ef4444;
+            color: #f87171;
+        }
+        .toast-info {
+            border-color: var(--color-teal);
+            color: var(--color-teal);
+        }
     </style>
 </head>
 <body>
@@ -472,9 +534,10 @@
             <div class="logo-text">WorldTunnel</div>
         </div>
         <div style="display: flex; align-items: center; gap: 1rem;">
-            <button class="btn-log" onclick="openLogModal()" title="Visualizza Log di Sistema">
+            <button class="btn-log" onclick="openLogModal()" title="Visualizza Log di Sistema" style="position: relative;">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 5px;"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
                 Log
+                <span id="log-error-dot" class="error-dot" style="display: none;"></span>
             </button>
             <div class="status-badge" id="signaling-status">
                 <span class="indicator offline" id="status-indicator"></span>
@@ -670,12 +733,29 @@
             }
         }
 
+        function showToast(message, type = 'info') {
+            let toast = document.getElementById('toast-notification');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'toast-notification';
+                toast.className = 'toast';
+                document.body.appendChild(toast);
+            }
+            
+            toast.innerText = message;
+            toast.className = `toast show toast-${type}`;
+            
+            setTimeout(() => {
+                toast.className = 'toast';
+            }, 4000);
+        }
+
         async function submitLocalLogin() {
             const email = document.getElementById('login-email').value.trim();
             const password = document.getElementById('login-password').value;
 
             if (!email || !password) {
-                alert("Compila tutti i campi!");
+                showToast("Compila tutti i campi!", "error");
                 return;
             }
 
@@ -683,12 +763,13 @@
                 const response = await fetch(`/api/login-submit?email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`);
                 const result = await response.json();
                 if (result.status === 'ok') {
+                    showToast("Accesso riuscito! Connessione in corso...", "success");
                     fetchStatus();
                 } else {
-                    alert("Errore: " + result.error);
+                    showToast("Errore: " + result.error, "error");
                 }
             } catch (err) {
-                alert("Errore di rete nell'effettuare l'accesso.");
+                showToast("Errore di rete nell'effettuare l'accesso.", "error");
             }
         }
 
@@ -698,15 +779,15 @@
             const confirm = document.getElementById('register-confirm').value;
 
             if (!email || !password || !confirm) {
-                alert("Compila tutti i campi!");
+                showToast("Compila tutti i campi!", "error");
                 return;
             }
             if (password !== confirm) {
-                alert("Le password non coincidono!");
+                showToast("Le password non coincidono!", "error");
                 return;
             }
             if (password.length < 6) {
-                alert("La password deve contenere almeno 6 caratteri!");
+                showToast("La password deve contenere almeno 6 caratteri!", "error");
                 return;
             }
 
@@ -714,13 +795,13 @@
                 const response = await fetch(`/api/register-submit?email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`);
                 const result = await response.json();
                 if (result.status === 'ok') {
-                    alert("Registrazione completata con successo!");
+                    showToast("Registrazione completata con successo! Connessione...", "success");
                     fetchStatus();
                 } else {
-                    alert("Errore: " + result.error);
+                    showToast("Errore: " + result.error, "error");
                 }
             } catch (err) {
-                alert("Errore di rete nell'effettuare la registrazione.");
+                showToast("Errore di rete nell'effettuare la registrazione.", "error");
             }
         }
 
@@ -728,7 +809,7 @@
             const text = document.getElementById(elementId).innerText;
             if (text === "--") return;
             navigator.clipboard.writeText(text).then(() => {
-                alert("IP copiato negli appunti: " + text);
+                showToast("IP copiato negli appunti!", "success");
             }).catch(err => {
                 console.error("Errore copia negli appunti: ", err);
             });
@@ -744,11 +825,11 @@
             const ip = ipInput.value.trim();
 
             if (!server) {
-                alert("Inserisci l'indirizzo del server di coordinamento!");
+                showToast("Inserisci l'indirizzo del server!", "error");
                 return;
             }
             if (!key) {
-                alert("Inserisci una chiave di rete valida!");
+                showToast("Inserisci una chiave di rete valida!", "error");
                 return;
             }
 
@@ -756,20 +837,20 @@
                 const response = await fetch(`/api/configure?server=${encodeURIComponent(server)}&key=${encodeURIComponent(key)}&ip=${encodeURIComponent(ip)}`);
                 const result = await response.json();
                 if (result.status === "ok") {
-                    alert("Configurazione salvata! Connessione in corso...");
+                    showToast("Configurazione salvata! Connessione...", "info");
                     fetchStatus();
                 } else {
-                    alert("Errore durante il salvataggio della configurazione");
+                    showToast("Errore durante il salvataggio!", "error");
                 }
             } catch (error) {
                 console.error("Errore salvataggio configurazione:", error);
-                alert("Errore di connessione all'agente locale");
+                showToast("Errore di connessione all'agente locale", "error");
             }
         }
 
         function startLogin() {
             if (!window.lastServerURL || !window.lastDeviceID) {
-                alert("Errore: Informazioni del server non disponibili. Riprova tra qualche secondo.");
+                showToast("Errore: Informazioni del server non disponibili.", "error");
                 return;
             }
             let baseUrl = window.lastServerURL
@@ -791,7 +872,7 @@
                 const mainDashboard = document.querySelector('main');
                 const statusBadge = document.getElementById('signaling-status');
                 
-                if (!data.authenticated && data.auth_error === "device_not_authenticated") {
+                if (!data.authenticated) {
                     loginContainer.style.display = 'block';
                     mainDashboard.style.display = 'none';
                     statusBadge.style.display = 'none';
@@ -824,16 +905,27 @@
                     ipInput.value = data.requested_ip || '';
                 }
 
-                // Aggiorna stato connessione server
+                // Aggiorna stato connessione server (3 stati: Offline, Autenticazione, Rete Attiva)
                 const statusIndicator = document.getElementById('status-indicator');
                 const statusText = document.getElementById('status-text');
 
-                if (data.online) {
-                    statusIndicator.className = 'indicator online';
-                    statusText.innerText = 'Server Connesso';
-                } else {
+                if (!data.online) {
                     statusIndicator.className = 'indicator offline';
                     statusText.innerText = 'Disconnesso';
+                } else if (!data.authenticated) {
+                    statusIndicator.className = 'indicator connecting';
+                    statusText.innerText = 'Autenticazione...';
+                } else {
+                    statusIndicator.className = 'indicator online';
+                    statusText.innerText = 'Rete Attiva';
+                }
+
+                // Punto di avviso errore log: si accende se siamo offline o se c'è un errore di autenticazione
+                const errorDot = document.getElementById('log-error-dot');
+                if (!data.online || (data.auth_error && data.auth_error !== 'device_not_authenticated')) {
+                    errorDot.style.display = 'block';
+                } else {
+                    errorDot.style.display = 'none';
                 }
 
                 // Aggiorna lista dei peer

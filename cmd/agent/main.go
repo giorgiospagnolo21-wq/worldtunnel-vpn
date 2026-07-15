@@ -269,7 +269,11 @@ func (a *Agent) handleSignalingLoop() {
 	for {
 		_, payload, err := a.wsConn.ReadMessage()
 		if err != nil {
-			log.Printf("Errore di lettura dal server WebSocket: %v", err)
+			if strings.Contains(err.Error(), "use of closed network connection") {
+				log.Println("Connessione chiusa per aggiornamento configurazione.")
+			} else {
+				log.Printf("Errore di lettura dal server WebSocket: %v", err)
+			}
 			return
 		}
 
