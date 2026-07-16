@@ -51,15 +51,10 @@ type Server struct {
 	deviceToEmail      map[string]string              // deviceID -> email (Sessioni attive)
 	users              map[string]User                // email -> User
 	usersFile          string
-	googleClientID     string
-	googleClientSecret string
 	publicURL          string
 }
 
 func NewServer() *Server {
-	clientID := os.Getenv("GOOGLE_CLIENT_ID")
-	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
-	
 	publicURL := os.Getenv("RENDER_EXTERNAL_URL")
 	if publicURL == "" {
 		publicURL = "http://localhost:8080"
@@ -73,8 +68,6 @@ func NewServer() *Server {
 		deviceToEmail:      make(map[string]string),
 		users:              make(map[string]User),
 		usersFile:          "users.json",
-		googleClientID:     clientID,
-		googleClientSecret: clientSecret,
 		publicURL:          publicURL,
 	}
 
@@ -384,26 +377,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Pagina di login con stile premium e supporto sia Google sia Account Interno
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	
-	googleButton := ""
-	if s.googleClientID != "" && s.googleClientSecret != "" {
-		redirectURI := fmt.Sprintf("%s/auth/callback", s.publicURL)
-		googleURL := fmt.Sprintf("https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=openid%%20email&state=%s",
-			s.googleClientID, url.QueryEscape(redirectURI), deviceID)
-		
-		googleButton = fmt.Sprintf(`
-			<a href="%s" class="btn-google">
-				<svg width="18" height="18" viewBox="0 0 24 24" style="margin-right: 10px;">
-					<path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v3.92h6.69a5.74 5.74 0 0 1-2.48 3.77v3.13h3.97c2.33-2.14 3.56-5.3 3.56-8.75z"/>
-					<path fill="#34A853" d="M12 24c3.24 0 5.97-1.08 7.96-2.91l-3.97-3.13c-1.1.74-2.52 1.18-3.99 1.18-3.07 0-5.67-2.08-6.6-4.88H1.31v3.23A12 12 0 0 0 12 24z"/>
-					<path fill="#FBBC05" d="M5.4 14.26a7.18 7.18 0 0 1 0-4.52V6.51H1.31a12 12 0 0 0 0 10.98l4.09-3.23z"/>
-					<path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.31 6.51l4.09 3.23c.93-2.8 3.53-4.88 6.6-4.88z"/>
-				</svg>
-				Accedi con Google
-			</a>
-			<div class="divider">o accedi con le tue credenziali</div>
-		`, googleURL)
-	}
-
 	errBlock := ""
 	if errMessage != "" {
 		errBlock = fmt.Sprintf(`<div class="error-msg">%s</div>`, errMessage)
@@ -443,8 +416,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			<p>Associa il tuo dispositivo al tuo account di rete</p>
 			
 			%s
-			
-			%s
 
 			<form action="/auth/login-submit" method="POST">
 				<input type="hidden" name="device_id" value="%s">
@@ -465,7 +436,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		</div>
 	</body>
 	</html>
-	`, googleButton, errBlock, deviceID, deviceID)
+	`, errBlock, deviceID, deviceID)
 }
 
 func (s *Server) handleRegisterUI(w http.ResponseWriter, r *http.Request) {
@@ -624,69 +595,7 @@ func (s *Server) handleRegisterSubmit(w http.ResponseWriter, r *http.Request) {
 	s.serveSuccessPage(w, email)
 }
 
-func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	code := r.FormValue("code")
-	deviceID := r.FormValue("state")
 
-	if code == "" || deviceID == "" {
-		http.Error(w, "Dati di autenticazione non validi", http.StatusBadRequest)
-		return
-	}
-
-	redirectURI := fmt.Sprintf("%s/auth/callback", s.publicURL)
-
-	tokenRes, err := http.PostForm("https://oauth2.googleapis.com/token", url.Values{
-		"code":          {code},
-		"client_id":     {s.googleClientID},
-		"client_secret": {s.googleClientSecret},
-		"redirect_uri":  {redirectURI},
-		"grant_type":    {"authorization_code"},
-	})
-	if err != nil {
-		http.Error(w, "Errore scambio token: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer tokenRes.Body.Close()
-
-	var tokenData struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.NewDecoder(tokenRes.Body).Decode(&tokenData); err != nil {
-		http.Error(w, "Errore decodifica token", http.StatusInternalServerError)
-		return
-	}
-
-	req, _ := http.NewRequest("GET", "https://www.googleapis.com/oauth2/v2/userinfo", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenData.AccessToken)
-	
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		http.Error(w, "Errore recupero info utente", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	var userInfo struct {
-		Email string `json:"email"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		http.Error(w, "Errore decodifica info utente", http.StatusInternalServerError)
-		return
-	}
-
-	if userInfo.Email == "" {
-		http.Error(w, "Impossibile recuperare l'indirizzo email", http.StatusBadRequest)
-		return
-	}
-
-	s.mu.Lock()
-	s.deviceToEmail[deviceID] = userInfo.Email
-	s.saveSessions()
-	s.mu.Unlock()
-
-	log.Printf("Autenticazione Riuscita! Dispositivo %s associato a %s via Google OAuth", deviceID, userInfo.Email)
-	s.serveSuccessPage(w, userInfo.Email)
-}
 
 func (s *Server) serveSuccessPage(w http.ResponseWriter, email string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -822,8 +731,6 @@ func main() {
 	http.HandleFunc("/auth/register-submit", server.handleRegisterSubmit)
 	http.HandleFunc("/auth/login-direct", server.handleLoginDirect)
 	http.HandleFunc("/auth/register-direct", server.handleRegisterDirect)
-	http.HandleFunc("/auth/callback", server.handleAuthCallback)
-	
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
@@ -834,7 +741,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Server di coordinamento WorldTunnel (con Database utenti e Google OAuth) avviato sulla porta %s...", port)
+	log.Printf("Server di coordinamento WorldTunnel (con Database utenti) avviato sulla porta %s...", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Errore all'avvio del server: %v", err)
 	}
