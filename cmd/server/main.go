@@ -272,7 +272,9 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	virtualIP, err := s.getOrAssignIP(email, clientID, requestedIP)
+	const networkKey = "global_network"
+
+	virtualIP, err := s.getOrAssignIP(networkKey, clientID, requestedIP)
 	if err != nil {
 		log.Printf("Connessione rifiutata per %s (account %s): %v", clientID, email, err)
 		errMsg, _ := json.Marshal(Message{Type: "register", Error: err.Error()})
@@ -283,18 +285,18 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		ID:        clientID,
 		VirtualIP: virtualIP,
-		Key:       email,
+		Key:       networkKey,
 		Conn:      conn,
 	}
 
 	s.mu.Lock()
-	if _, ok := s.clients[email]; !ok {
-		s.clients[email] = make(map[string]*Client)
+	if _, ok := s.clients[networkKey]; !ok {
+		s.clients[networkKey] = make(map[string]*Client)
 	}
-	if oldClient, ok := s.clients[email][clientID]; ok {
+	if oldClient, ok := s.clients[networkKey][clientID]; ok {
 		oldClient.Conn.Close()
 	}
-	s.clients[email][clientID] = client
+	s.clients[networkKey][clientID] = client
 	s.mu.Unlock()
 
 	log.Printf("Agent Connesso: %s | Account: '%s' | IP Virtuale: %s", clientID, email, virtualIP)
@@ -304,11 +306,11 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request) {
 		IP:   virtualIP,
 	}
 	if err := conn.WriteJSON(regMsg); err != nil {
-		s.removeClient(email, clientID)
+		s.removeClient(networkKey, clientID)
 		return
 	}
 
-	s.broadcastPeers(email)
+	s.broadcastPeers(networkKey)
 
 	for {
 		_, payload, err := conn.ReadMessage()
@@ -324,11 +326,11 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request) {
 
 		switch msg.Type {
 		case "signal":
-			s.routeSignal(email, clientID, msg)
+			s.routeSignal(networkKey, clientID, msg)
 		}
 	}
 
-	s.removeClient(email, clientID)
+	s.removeClient(networkKey, clientID)
 }
 
 func (s *Server) removeClient(key, clientID string) {
