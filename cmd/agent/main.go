@@ -750,6 +750,74 @@ func main() {
 
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	http.HandleFunc("/api/logout", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		agent.mu.Lock()
+		serverURL := agent.serverURL
+		localID := agent.localID
+		agent.mu.Unlock()
+
+		// Notifica il server per disassociare la sessione del dispositivo
+		logoutURL := strings.Replace(serverURL, "wss://", "https://", 1)
+		logoutURL = strings.Replace(logoutURL, "ws://", "http://", 1)
+		logoutURL = strings.TrimSuffix(logoutURL, "/ws") + "/auth/logout-direct"
+
+		reqBody, _ := json.Marshal(map[string]string{
+			"device_id": localID,
+		})
+
+		resp, err := http.Post(logoutURL, "application/json", strings.NewReader(string(reqBody)))
+		if err != nil {
+			log.Printf("Errore invio richiesta logout al server: %v", err)
+		} else {
+			resp.Body.Close()
+		}
+
+		agent.mu.Lock()
+		agent.email = ""
+		agent.password = ""
+		agent.authenticated = false
+		agent.localIP = ""
+		agent.mu.Unlock()
+
+		agent.saveLocalConfig()
+
+		agent.mu.Lock()
+		if agent.tunDev != nil {
+			agent.tunDev.Close()
+			agent.tunDev = nil
+		}
+		if agent.webrtcMgr != nil {
+			agent.webrtcMgr.Close()
+			agent.webrtcMgr = nil
+		}
+		agent.mu.Unlock()
+
+		agent.wsMutex.Lock()
+		if agent.wsConn != nil {
+			agent.wsConn.Close()
+		}
+		agent.wsMutex.Unlock()
+
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+	http.HandleFunc("/api/reconnect", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		agent.wsMutex.Lock()
+		if agent.wsConn != nil {
+			agent.wsConn.Close()
+			log.Println("Riconnessione manuale del WebSocket avviata...")
+		} else {
+			log.Println("WebSocket non attivo, avvio tentativo di connessione immediato...")
+		}
+		agent.wsMutex.Unlock()
+
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 	http.HandleFunc("/api/configure", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")

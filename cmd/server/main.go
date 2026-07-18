@@ -51,6 +51,7 @@ type Server struct {
 	deviceToEmail      map[string]string              // deviceID -> email (Sessioni attive)
 	users              map[string]User                // email -> User
 	usersFile          string
+	sessionsFile       string
 	publicURL          string
 }
 
@@ -61,13 +62,23 @@ func NewServer() *Server {
 	}
 	publicURL = strings.TrimSuffix(publicURL, "/")
 
+	usersFile := os.Getenv("USERS_FILE")
+	if usersFile == "" {
+		usersFile = "users.json"
+	}
+	sessionsFile := os.Getenv("SESSIONS_FILE")
+	if sessionsFile == "" {
+		sessionsFile = "sessions.json"
+	}
+
 	s := &Server{
 		clients:            make(map[string]map[string]*Client),
 		assignedIP:         make(map[string]map[string]string),
 		ipPools:            make(map[string][]string),
 		deviceToEmail:      make(map[string]string),
 		users:              make(map[string]User),
-		usersFile:          "users.json",
+		usersFile:          usersFile,
+		sessionsFile:       sessionsFile,
 		publicURL:          publicURL,
 	}
 
@@ -83,7 +94,7 @@ func hashPassword(password string) string {
 }
 
 func (s *Server) loadSessions() {
-	file, err := os.Open("sessions.json")
+	file, err := os.Open(s.sessionsFile)
 	if err != nil {
 		return
 	}
@@ -93,12 +104,12 @@ func (s *Server) loadSessions() {
 		log.Printf("Errore decodifica sessioni: %v", err)
 		s.deviceToEmail = make(map[string]string)
 	} else {
-		log.Printf("Caricate %d sessioni attive da sessions.json", len(s.deviceToEmail))
+		log.Printf("Caricate %d sessioni attive da %s", len(s.deviceToEmail), s.sessionsFile)
 	}
 }
 
 func (s *Server) saveSessions() {
-	file, err := os.Create("sessions.json")
+	file, err := os.Create(s.sessionsFile)
 	if err != nil {
 		log.Printf("Errore creazione file sessioni: %v", err)
 		return
@@ -707,6 +718,28 @@ func (s *Server) handleRegisterDirect(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+func (s *Server) handleLogoutDirect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	var req struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	delete(s.deviceToEmail, req.DeviceID)
+	s.saveSessions()
+	s.mu.Unlock()
+
+	log.Printf("Dispositivo %s scollegato via logout", req.DeviceID)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
 func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -731,6 +764,7 @@ func main() {
 	http.HandleFunc("/auth/register-submit", server.handleRegisterSubmit)
 	http.HandleFunc("/auth/login-direct", server.handleLoginDirect)
 	http.HandleFunc("/auth/register-direct", server.handleRegisterDirect)
+	http.HandleFunc("/auth/logout-direct", server.handleLogoutDirect)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
